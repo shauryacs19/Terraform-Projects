@@ -28,8 +28,9 @@
 9. [Deployment Guide](#deployment-guide)
 10. [Verification](#verification)
 11. [Troubleshooting & Lessons Learned](#troubleshooting--lessons-learned)
-12. [Cost Considerations](#cost-considerations)
-13. [Cleanup](#cleanup)
+12. [Extending to 3 VPCs (Full-Mesh Peering)](#extending-to-3-vpcs-full-mesh-peering)
+13. [Cost Considerations](#cost-considerations)
+14. [Cleanup](#cleanup)
 
 ---
 
@@ -59,6 +60,11 @@ travels across the AWS global backbone and never touches the public internet.
 - Manage everything with **remote, encrypted Terraform state** in S3.
 
 ## Architecture
+
+![Cross-region VPC peering architecture](Screenshots/architecture.png)
+
+<details>
+<summary>Text-based (Mermaid) version of the same diagram</summary>
 
 ```mermaid
 flowchart LR
@@ -95,6 +101,8 @@ flowchart LR
     PIGW --- Internet
     SIGW --- Internet
 ```
+
+</details>
 
 **Traffic flow:** the primary route table sends anything destined for
 `10.1.0.0/16` into the peering connection; the secondary route table does the
@@ -406,6 +414,27 @@ into one routable network.
 - `ping` working while `curl` fails means the network path is fine — look at
   the service or the TCP rule, not the peering.
 - Key pairs are region-specific even when they share a name.
+
+## Extending to 3 VPCs (Full-Mesh Peering)
+
+VPC peering is **non-transitive** — if A peers with B and B with C, A still
+cannot reach C. So connecting three VPCs so that *all* of them can reach each
+other requires a **full mesh**: peer every pair directly. This is the planned
+next step for the project (adding **VPC C · `10.2.0.0/16`** in a third region).
+
+![Full-mesh peering across three VPCs](Screenshots/architecture-3vpc-full-mesh.png)
+
+- **Three peering connections** — `A↔B`, `B↔C`, `A↔C`. In general N VPCs need
+  **N(N−1)/2** connections (3 here, 6 at four VPCs), which is why the mesh
+  stops scaling.
+- **Each route table carries a route per peer CIDR**, pointing at the matching
+  peering connection (e.g. VPC A routes `10.1.0.0/16 → A↔B` and
+  `10.2.0.0/16 → A↔C`).
+- In Terraform this is the existing pattern ×3: three
+  `aws_vpc_peering_connection` + accepter pairs, and two peer routes per route
+  table.
+- For truly transitive routing at scale, an **AWS Transit Gateway** (one per
+  region, joined by inter-region TGW peering) replaces the mesh with a hub.
 
 ## Cost Considerations
 
