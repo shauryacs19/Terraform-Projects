@@ -31,70 +31,40 @@ different regions.
 
 ### Cross-Region VPC Peering
 
-**What it is** — A one-to-one, non-transitive network connection between two
-VPCs that routes over the AWS backbone using private IPs. Cross-region peering
-joins VPCs in different regions.
+- **What:** one-to-one, non-transitive link between two VPCs, routing over the AWS backbone on private IPs.
+- **Why here:** join two regionally-isolated VPCs without exposing traffic to the internet.
+- **AWS:** `aws_vpc_peering_connection` (requester, `peer_region`) + `aws_vpc_peering_connection_accepter`; `auto_accept = false` — cross-region can't auto-accept in one step.
+- **Requires:** non-overlapping CIDRs.
+- **Interview:** non-transitive (A↔B + B↔C ≠ A↔C); SG references don't work cross-region — use CIDRs; MTU capped at 1500; cross-region transfer billed per GB.
 
-**Why it is used here** — To connect two regionally-isolated VPCs so instances
-communicate over private IPs without exposing traffic to the public internet.
+![Peering active](Screenshots/07-peering-connection-mumbai-view.png)
+*Requester Mumbai (`10.0.0.0/16`) ↔ accepter Hyderabad (`10.1.0.0/16`), status **Active** — cross-region peering established.*
 
-**AWS implementation** — `aws_vpc_peering_connection` on the requester with
-`peer_region` set, accepted by `aws_vpc_peering_connection_accepter` in the
-peer region. `auto_accept = false` — cross-region peering cannot be
-auto-accepted in a single step.
-
-**Best practices** — Non-overlapping CIDRs; add only the required routes;
-least-privilege security groups; move to Transit Gateway once beyond a few VPCs
-(peering is non-transitive and grows at N(N−1)/2).
-
-**Interview points**
-- Non-transitive — A↔B and B↔C does **not** give A↔C.
-- Overlapping CIDRs are rejected.
-- Security groups **cannot** reference peer SGs across region/account — use CIDRs.
-- Cross-region peering does not support jumbo frames (MTU capped at 1500).
-- Cross-region data transfer is billed per GB in both directions.
+![Primary to secondary](Screenshots/01-primary-to-secondary-ping-curl.png)
+![Secondary to primary](Screenshots/02-secondary-to-primary-ping-curl.png)
+*Both instances ping and curl each other by private IP (0% loss) — traffic routes over the peering connection, not the internet.*
 
 ### Route Tables
 
-**What it is** — Rules mapping a destination CIDR to a target; one route table
-per subnet; most-specific (longest-prefix) route wins.
+- **What:** destination-CIDR → target rules; one table per subnet; longest-prefix match wins.
+- **Why here:** a peering connection carries no traffic until each side routes the peer CIDR to it.
+- **AWS:** standalone `aws_route` with `vpc_peering_connection_id` on **both** tables, plus a default route to the IGW.
+- **Best practice:** never mix inline `route {}` blocks with `aws_route` resources (perpetual conflicts).
+- **Interview:** routes required on **both** sides; a peering connection alone does nothing without them.
 
-**Why it is used here** — A peering connection carries no traffic until each
-side has a route to the other's CIDR pointing at the connection.
-
-**AWS implementation** — Standalone `aws_route` with `vpc_peering_connection_id`
-on **both** route tables (`10.1.0.0/16` on the primary, `10.0.0.0/16` on the
-secondary), plus a default route to the IGW.
-
-**Best practices** — Never mix inline `route {}` blocks with `aws_route`
-resources on the same table (causes perpetual conflicts); define return routes
-explicitly on both sides.
-
-**Interview points**
-- Peering requires routes on **both** VPCs — it is not automatic.
-- A peering connection alone does nothing without routes.
-- Longest-prefix match determines the selected route.
+![Route table](Screenshots/05-primary-route-table.png)
+*Peer CIDR (`10.1.0.0/16`) → peering connection (`pcx-…`) — the route that makes peering functional.*
 
 ### Security Groups
 
-**What it is** — A stateful, allow-only virtual firewall bound to an instance's
-ENI; rules are evaluated as a union; return traffic is implicitly permitted.
+- **What:** stateful, allow-only instance firewall; rules evaluated as a union; return traffic implicit.
+- **Why here:** each SG must admit inbound from the peer VPC CIDR (ICMP + TCP).
+- **AWS:** `aws_security_group` ingress with `cidr_blocks = [peer_vpc_cidr]`.
+- **Best practice:** reference peer **CIDRs** (SG references fail cross-region); scope SSH separately.
+- **Interview:** stateful (return auto-allowed); allow-only (NACLs for deny); cross-region forces CIDR-based rules.
 
-**Why it is used here** — To admit cross-VPC traffic, each SG must explicitly
-allow inbound from the **peer** VPC's CIDR (ICMP for reachability, TCP for the
-application).
-
-**AWS implementation** — `aws_security_group` ingress with
-`cidr_blocks = [peer_vpc_cidr]` for ICMP and TCP; SSH scoped separately for
-management.
-
-**Best practices** — Reference peer **CIDRs** (SG references don't work across
-regions); split management (SSH) from workload rules; keep port ranges tight.
-
-**Interview points**
-- Stateful — allowing inbound automatically permits the response.
-- Allow-only; use NACLs for explicit deny.
-- Cross-region/cross-account peering forces CIDR-based rules, not SG references.
+![Security group](Screenshots/09-primary-security-group.png)
+*Inbound ICMP + all-TCP from the peer CIDR (`10.1.0.0/16`) — admits cross-VPC traffic.*
 
 ## Project Implementation
 
@@ -105,40 +75,12 @@ regions); split management (SSH) from workload rules; keep port ranges tight.
 - Fixed private IPs (`10.0.1.10` / `10.1.1.10`) for stable validation.
 - Multi-region provider aliases; remote encrypted S3 state.
 
-## Validation
-
-### Cross-region private connectivity
-![Primary to secondary](Screenshots/01-primary-to-secondary-ping-curl.png)
-![Secondary to primary](Screenshots/02-secondary-to-primary-ping-curl.png)
-
-Ping (0% loss) and HTTP succeed **both directions** between instances in
-different regions, addressed by private IP — proving traffic routes over the
-peering connection, not the internet.
-
-### Peering connection active (cross-region)
-![Peering active](Screenshots/07-peering-connection-mumbai-view.png)
-
-Requester in Mumbai (`10.0.0.0/16`) and accepter in Hyderabad (`10.1.0.0/16`),
-status **Active** — confirming an established cross-region peering.
-
-### Peering route in the route table
-![Route table](Screenshots/05-primary-route-table.png)
-
-The route table forwards the peer CIDR (`10.1.0.0/16`) to the peering
-connection (`pcx-…`) — the routing that makes peering functional.
-
-### Security group admitting the peer VPC
-![Security group](Screenshots/09-primary-security-group.png)
-
-Inbound ICMP and all-TCP sourced from the peer VPC CIDR (`10.1.0.0/16`) — what
-allows cross-VPC traffic to be accepted.
-
 ## Key Learnings
 
-- Peering is **non-transitive** and requires routes **and** SG rules on both sides.
+- Peering is **non-transitive** and needs routes **and** SG rules on both sides.
 - **Non-overlapping CIDRs** are mandatory for peering.
-- Cross-region peering **cannot** use security-group references — rules must be CIDR-based.
-- Isolating ICMP vs TCP (ping works, curl fails) pinpoints SG/service issues vs routing.
+- Cross-region peering **cannot** use SG references — rules must be CIDR-based.
+- Isolating ICMP vs TCP (ping works, curl fails) pinpoints SG/service vs routing issues.
 - Mixing inline routes with `aws_route` resources causes route conflicts.
 
 ## Repository Structure
@@ -151,5 +93,5 @@ allows cross-VPC traffic to be accepted.
 ├── outputs.tf      # Instance private/public IPs
 ├── providers.tf    # Multi-region provider aliases
 ├── backend.tf      # Remote S3 state
-└── Screenshots/    # Validation evidence
+└── Screenshots/    # Console/terminal evidence
 ```
