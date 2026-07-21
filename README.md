@@ -44,6 +44,10 @@ Features enabled in this project:
 - **Bucket policy scoped to CloudFront** — only the `cloudfront.amazonaws.com`
   service principal can `GetObject`, and only when the request comes from
   this specific distribution's ARN.
+- **Versioning** — every overwrite/delete keeps the previous object version,
+  so a bad deploy or accidental deletion can be rolled back.
+- **Server-side encryption (SSE-S3 / AES256)** — objects are encrypted at
+  rest automatically, with keys fully managed by S3 (no key setup required).
 - Individual object upload per file (`aws_s3_object`) with content-type
   detection by extension and change detection via MD5 `etag`, so
   `terraform apply` only re-uploads files that actually changed.
