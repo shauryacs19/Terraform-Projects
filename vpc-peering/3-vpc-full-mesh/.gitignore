@@ -8,3 +8,7 @@ terraform.tfvars
 *.tfvars.json
 .terraform/
 *.pem
+
+# SSH keys — ignore private keys, keep the public *.pub (terraform reads them)
+keys/*
+!keys/*.pub

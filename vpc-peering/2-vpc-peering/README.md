@@ -1,443 +1,155 @@
-# Cross-Region VPC Peering on AWS with Terraform
+# Cross-Region VPC Peering
 
-> Infrastructure-as-Code project that provisions two isolated VPCs in **two
-> different AWS regions** and connects them privately using a **cross-region
-> VPC peering connection**, verified with live traffic between EC2 instances
-> over private IPs.
+Private, cross-region connectivity between two isolated VPCs (`ap-south-1` and
+`ap-south-2`) using an AWS VPC peering connection, provisioned with Terraform.
+Traffic between the VPCs traverses the AWS backbone over private IPs — never
+the public internet. Validated with live ICMP and HTTP between instances in
+different regions.
 
-| | |
-|---|---|
-| **Cloud Provider** | Amazon Web Services (AWS) |
-| **IaC Tool** | Terraform (`~> 6.0` AWS provider) |
-| **Regions** | `ap-south-1` (Mumbai) · `ap-south-2` (Hyderabad) |
-| **State Backend** | Amazon S3 (remote, encrypted) |
-| **Status** | Deployed & verified — 0% packet loss, HTTP reachable over peering |
-
-> **Part of the [VPC Peering series](../README.md):** **2-VPC (this)** ·
+> Part of the [VPC Peering series](../README.md): **2-VPC (this)** ·
 > [3-VPC full mesh](../3-vpc-full-mesh/) · [3-VPC transit gateway](../3-vpc-transit-gateway/)
-
----
-
-## Table of Contents
-
-1. [Overview](#overview)
-2. [Objectives](#objectives)
-3. [Architecture](#architecture)
-4. [AWS Services & Concepts](#aws-services--concepts)
-5. [Technology Stack](#technology-stack)
-6. [Repository Structure](#repository-structure)
-7. [Prerequisites](#prerequisites)
-8. [Configuration Reference](#configuration-reference)
-9. [Deployment Guide](#deployment-guide)
-10. [Verification](#verification)
-11. [Troubleshooting & Lessons Learned](#troubleshooting--lessons-learned)
-12. [Cost Considerations](#cost-considerations)
-13. [Cleanup](#cleanup)
-
----
-
-## Overview
-
-By default, every Amazon VPC is a completely isolated network — two VPCs cannot
-communicate, even within the same account, and especially not across regions.
-This project demonstrates how to join two such networks into a single routable
-address space using **VPC peering**, while each VPC retains its own CIDR block,
-subnet, internet gateway, route table and security boundary.
-
-Two EC2 instances — one in each region — run Apache and are proven to reach
-each other over the peering link using **private IP addresses only**. Traffic
-travels across the AWS global backbone and never touches the public internet.
-
-## Objectives
-
-- Provision two VPCs with **non-overlapping CIDR blocks** in two different AWS
-  regions using a single Terraform configuration.
-- Establish a **cross-region VPC peering connection** using the requester /
-  accepter pattern.
-- Configure **route tables** and **security groups** on both sides so the VPCs
-  can route to and accept traffic from one another.
-- Bootstrap an EC2 web server in each VPC via **user data** (cloud-init).
-- **Verify** private connectivity end-to-end with `ping` (ICMP) and `curl`
-  (HTTP) across the peering connection.
-- Manage everything with **remote, encrypted Terraform state** in S3.
 
 ## Architecture
 
-![Cross-region VPC peering architecture](Screenshots/architecture.png)
+![Architecture](Screenshots/architecture.png)
 
-<details>
-<summary>Text-based (Mermaid) version of the same diagram</summary>
+## AWS Services Used
 
-```mermaid
-flowchart LR
-    subgraph P["Primary VPC — ap-south-1 (10.0.0.0/16)"]
-        PIGW[Internet Gateway]
-        PRT[Route Table]
-        PSN["Subnet 10.0.1.0/24"]
-        PEC2["EC2 · Apache\n10.0.1.10"]
-        PSG[Security Group]
-        PSN --- PEC2
-        PEC2 -.-> PSG
-        PSN --- PRT
-        PRT --- PIGW
-    end
-
-    subgraph S["Secondary VPC — ap-south-2 (10.1.0.0/16)"]
-        SIGW[Internet Gateway]
-        SRT[Route Table]
-        SSN["Subnet 10.1.1.0/24"]
-        SEC2["EC2 · Apache\n10.1.1.10"]
-        SSG[Security Group]
-        SSN --- SEC2
-        SEC2 -.-> SSG
-        SSN --- SRT
-        SRT --- SIGW
-    end
-
-    PEER{{VPC Peering Connection\nrequester ↔ accepter}}
-    PRT -->|"route 10.1.0.0/16"| PEER
-    SRT -->|"route 10.0.0.0/16"| PEER
-    PEER === S
-
-    Internet((Internet))
-    PIGW --- Internet
-    SIGW --- Internet
-```
-
-</details>
-
-**Traffic flow:** the primary route table sends anything destined for
-`10.1.0.0/16` into the peering connection; the secondary route table does the
-reverse for `10.0.0.0/16`. Each security group explicitly allows inbound
-traffic from the *other* VPC's CIDR. So a request from `10.0.1.10` to
-`10.1.1.10` is routed over the peering link, admitted by the secondary security
-group, and answered by Apache — entirely over private IPs.
-
-## AWS Services & Concepts
-
-Each concept below is followed by the actual console screenshot from this
-deployment, so the theory maps directly onto what was built.
-
-### Amazon VPC (Virtual Private Cloud)
-
-**What it is**
-- A logically isolated virtual network in AWS where you control the IP range,
-  subnets, routing and gateways.
-- **Region-scoped** and isolated by default — two VPCs cannot talk to each
-  other until explicitly connected.
-- Peering requires **non-overlapping CIDRs**, because overlapping addresses
-  make routing ambiguous.
-
-**Used in this project**
-- Two VPCs with non-overlapping CIDRs: `10.0.0.0/16` (Mumbai) and `10.1.0.0/16`
-  (Hyderabad).
-- `enable_dns_support` and `enable_dns_hostnames` turned on.
-- Each VPC created through a separate **provider alias** (one per region).
-
-The resource map for each VPC below shows the single `/24` subnet, its route
-tables, and the attached Internet Gateway:
-
-| Primary VPC — ap-south-1 | Secondary VPC — ap-south-2 |
+| Service | Purpose |
 |---|---|
-| ![Primary VPC resource map](Screenshots/03-primary-vpc-resource-map.png) | ![Secondary VPC resource map](Screenshots/04-secondary-vpc-resource-map.png) |
+| **VPC Peering** | Private cross-region link between the two VPCs |
+| **Route Tables** | Direct peer-CIDR traffic through the peering connection |
+| **Security Groups** | Allow ICMP/TCP inbound from the peer VPC CIDR |
+| VPC | Two isolated networks — `10.0.0.0/16` and `10.1.0.0/16` |
+| Subnets | One public `/24` per VPC |
+| Internet Gateway | Outbound access for instance bootstrap and SSH |
+| EC2 | Endpoints used only to validate connectivity |
+| S3 | Remote, encrypted Terraform state backend |
+| Provider aliases | Manage two regions from one configuration |
 
-### Subnets
+## Core Concepts
 
-**What it is**
-- A sub-range of a VPC's CIDR, bound to a single Availability Zone.
-- Instances live in subnets, not directly in the VPC.
-- A subnet is "public" when its route table has a path to an Internet Gateway.
+### Cross-Region VPC Peering
 
-**Used in this project**
-- `cidrsubnet(vpc_cidr, 8, 1)` carves a `/24` (`10.0.1.0/24`, `10.1.1.0/24`)
-  out of each `/16`.
-- `map_public_ip_on_launch = true` so instances get a public IP for SSH.
-- Availability Zone chosen dynamically via the `aws_availability_zones` data
-  source (visible as `ap-south-1a` / `ap-south-2a` in the VPC maps above).
+**What it is** — A one-to-one, non-transitive network connection between two
+VPCs that routes over the AWS backbone using private IPs. Cross-region peering
+joins VPCs in different regions.
 
-### Internet Gateway (IGW)
+**Why it is used here** — To connect two regionally-isolated VPCs so instances
+communicate over private IPs without exposing traffic to the public internet.
 
-**What it is**
-- A horizontally-scaled, highly-available component connecting a VPC to the
-  internet.
-- Performs network address translation for instances that have public IPs.
-- Without an IGW (and a route to it), a subnet is entirely private.
+**AWS implementation** — `aws_vpc_peering_connection` on the requester with
+`peer_region` set, accepted by `aws_vpc_peering_connection_accepter` in the
+peer region. `auto_accept = false` — cross-region peering cannot be
+auto-accepted in a single step.
 
-**Used in this project**
-- One IGW per VPC — needed so instances can `apt-get install apache2` on first
-  boot and so you can SSH in from your workstation.
-- Shown as `Primary-IGW-ap-south-1` / `Secondary-IGW-ap-south-2` in the VPC
-  resource maps above.
+**Best practices** — Non-overlapping CIDRs; add only the required routes;
+least-privilege security groups; move to Transit Gateway once beyond a few VPCs
+(peering is non-transitive and grows at N(N−1)/2).
 
-### Route Tables & Routes
+**Interview points**
+- Non-transitive — A↔B and B↔C does **not** give A↔C.
+- Overlapping CIDRs are rejected.
+- Security groups **cannot** reference peer SGs across region/account — use CIDRs.
+- Cross-region peering does not support jumbo frames (MTU capped at 1500).
+- Cross-region data transfer is billed per GB in both directions.
 
-**What it is**
-- A route table maps a **destination CIDR** to a **target** (IGW, peering
-  connection, etc.).
-- Every subnet is associated with exactly one route table.
-- The most specific matching route wins (**longest-prefix match**).
+### Route Tables
 
-**Used in this project**
-- **Standalone `aws_route` resources** only — never mixed with inline
-  `route {}` blocks, since mixing the two styles on one table makes Terraform
-  conflict on every apply.
-- A default route `0.0.0.0/0 → IGW` and a **peering route** to the other VPC's
-  CIDR, per VPC.
-- `aws_route_table_association` binding each subnet to its table.
+**What it is** — Rules mapping a destination CIDR to a target; one route table
+per subnet; most-specific (longest-prefix) route wins.
 
-Each table shows three **Active** routes — `local`, the internet route, and the
-peering route via `pcx-0404d189eb1663c8c`:
+**Why it is used here** — A peering connection carries no traffic until each
+side has a route to the other's CIDR pointing at the connection.
 
-| Primary route table | Secondary route table |
-|---|---|
-| ![Primary route table](Screenshots/05-primary-route-table.png) | ![Secondary route table](Screenshots/06-secondary-route-table.png) |
+**AWS implementation** — Standalone `aws_route` with `vpc_peering_connection_id`
+on **both** route tables (`10.1.0.0/16` on the primary, `10.0.0.0/16` on the
+secondary), plus a default route to the IGW.
 
-### VPC Peering Connection
+**Best practices** — Never mix inline `route {}` blocks with `aws_route`
+resources on the same table (causes perpetual conflicts); define return routes
+explicitly on both sides.
 
-**What it is**
-- A direct, private network link between two VPCs, so resources communicate
-  using private IPs as if on the same network.
-- Traffic stays on the AWS backbone — never the public internet.
-- **Non-transitive** (A↔B and B↔C does not give A↔C) and requires
-  non-overlapping CIDRs.
-
-**Used in this project**
-- `aws_vpc_peering_connection` on the requester with `peer_region` set — this
-  is what makes it **cross-region**.
-- `auto_accept = false` plus a separate `aws_vpc_peering_connection_accepter`
-  in the peer region — cross-region peering **cannot** be auto-accepted in one
-  step.
-- Routes on **both** sides pointing at the connection (shown above).
-
-The connection is **Active**, with requester in Mumbai (`10.0.0.0/16`) and
-accepter in Hyderabad (`10.1.0.0/16`):
-
-| Requester side (Mumbai) | Accepter side (Hyderabad) |
-|---|---|
-| ![Peering connection Mumbai view](Screenshots/07-peering-connection-mumbai-view.png) | ![Peering connection Hyderabad view](Screenshots/08-peering-connection-hyderabad-view.png) |
+**Interview points**
+- Peering requires routes on **both** VPCs — it is not automatic.
+- A peering connection alone does nothing without routes.
+- Longest-prefix match determines the selected route.
 
 ### Security Groups
 
-**What it is**
-- A **stateful** virtual firewall on an instance's network interface — return
-  traffic for allowed inbound flows is permitted automatically.
-- **Allow-only** (no explicit deny rules); evaluated as the union of all rules.
+**What it is** — A stateful, allow-only virtual firewall bound to an instance's
+ENI; rules are evaluated as a union; return traffic is implicitly permitted.
 
-**Used in this project**
-- **SSH (TCP 22)** from anywhere for administration.
-- **ICMP** from the peer CIDR — this is what makes `ping` work.
-- **All TCP (0–65535)** from the peer CIDR — this is what makes `curl`/HTTP
-  work between the VPCs.
-- All outbound traffic allowed.
+**Why it is used here** — To admit cross-VPC traffic, each SG must explicitly
+allow inbound from the **peer** VPC's CIDR (ICMP for reachability, TCP for the
+application).
 
-Inbound rules on each SG, sourced from the *peer* VPC's CIDR:
+**AWS implementation** — `aws_security_group` ingress with
+`cidr_blocks = [peer_vpc_cidr]` for ICMP and TCP; SSH scoped separately for
+management.
 
-| Primary SG (source `10.1.0.0/16`) | Secondary SG (source `10.0.0.0/16`) |
-|---|---|
-| ![Primary security group](Screenshots/09-primary-security-group.png) | ![Secondary security group](Screenshots/10-secondary-security-group.png) |
+**Best practices** — Reference peer **CIDRs** (SG references don't work across
+regions); split management (SSH) from workload rules; keep port ranges tight.
 
-### Amazon EC2 (Elastic Compute Cloud)
+**Interview points**
+- Stateful — allowing inbound automatically permits the response.
+- Allow-only; use NACLs for explicit deny.
+- Cross-region/cross-account peering forces CIDR-based rules, not SG references.
 
-**What it is**
-- Resizable virtual servers booted from an AMI, running in a subnet and
-  protected by security groups.
+## Project Implementation
 
-**Used in this project**
-- AMI resolved dynamically via the `aws_ami` data source (latest Ubuntu 24.04
-  LTS per region).
-- `user_data` cloud-init script installs and starts Apache on first boot —
-  **runs only once, at first boot**.
-- Fixed `private_ip` (`10.0.1.10` / `10.1.1.10`) for stable addressing across
-  rebuilds.
-- Region-specific key pairs for SSH.
+- Two VPCs in `ap-south-1` and `ap-south-2` with non-overlapping CIDRs.
+- Cross-region peering via the requester / accepter pattern (`auto_accept = false`).
+- Route tables on both sides directing the peer CIDR through the peering connection.
+- Security groups allowing ICMP + TCP from the peer VPC CIDR.
+- Fixed private IPs (`10.0.1.10` / `10.1.1.10`) for stable validation.
+- Multi-region provider aliases; remote encrypted S3 state.
 
-*(The running instances are proven working in the [Verification](#verification)
-section.)*
+## Validation
 
-### Terraform Multi-Provider (Provider Aliases)
+### Cross-region private connectivity
+![Primary to secondary](Screenshots/01-primary-to-secondary-ping-curl.png)
+![Secondary to primary](Screenshots/02-secondary-to-primary-ping-curl.png)
 
-**What it is**
-- A single Terraform configuration can manage multiple regions/accounts by
-  declaring the provider more than once with different `alias` values.
+Ping (0% loss) and HTTP succeed **both directions** between instances in
+different regions, addressed by private IP — proving traffic routes over the
+peering connection, not the internet.
 
-**Used in this project**
-- Provider declared twice: `primary` → `ap-south-1`, `secondary` →
-  `ap-south-2`.
-- Every resource selects its region via `provider = aws.primary` or
-  `provider = aws.secondary`.
+### Peering connection active (cross-region)
+![Peering active](Screenshots/07-peering-connection-mumbai-view.png)
 
-### Terraform Remote State (S3 Backend)
+Requester in Mumbai (`10.0.0.0/16`) and accepter in Hyderabad (`10.1.0.0/16`),
+status **Active** — confirming an established cross-region peering.
 
-**What it is**
-- Terraform records the resources it manages in a *state file*.
-- Storing it remotely (S3) means it survives a wiped machine and can be shared
-  across runs.
+### Peering route in the route table
+![Route table](Screenshots/05-primary-route-table.png)
 
-**Used in this project**
-- Remote S3 backend keyed under `vpc-peering/terraform.tfstate`, with
-  encryption at rest enabled.
+The route table forwards the peer CIDR (`10.1.0.0/16`) to the peering
+connection (`pcx-…`) — the routing that makes peering functional.
 
-## Technology Stack
+### Security group admitting the peer VPC
+![Security group](Screenshots/09-primary-security-group.png)
 
-| Layer | Technology |
-|---|---|
-| Cloud | AWS (VPC, EC2, Internet Gateway, Route Tables, Security Groups, VPC Peering) |
-| IaC | Terraform, HCL, AWS provider `~> 6.0` |
-| State | Amazon S3 (remote backend, encrypted) |
-| Compute OS | Ubuntu 24.04 LTS |
-| Web server | Apache HTTP Server (via cloud-init user data) |
+Inbound ICMP and all-TCP sourced from the peer VPC CIDR (`10.1.0.0/16`) — what
+allows cross-VPC traffic to be accepted.
+
+## Key Learnings
+
+- Peering is **non-transitive** and requires routes **and** SG rules on both sides.
+- **Non-overlapping CIDRs** are mandatory for peering.
+- Cross-region peering **cannot** use security-group references — rules must be CIDR-based.
+- Isolating ICMP vs TCP (ping works, curl fails) pinpoints SG/service issues vs routing.
+- Mixing inline routes with `aws_route` resources causes route conflicts.
 
 ## Repository Structure
 
 ```
-.
-├── main.tf                  # VPCs, subnets, IGWs, route tables/routes, peering, SGs, EC2 instances
-├── data.tf                  # AMI and Availability Zone data sources (per region)
-├── local.tf                 # user_data bootstrap scripts (install + start Apache)
-├── variables.tf             # Input variables (regions, CIDRs, instance type, key names)
-├── outputs.tf               # Instance public/private IPs
-├── providers.tf             # AWS provider aliases (primary / secondary regions)
-├── backend.tf               # Remote state backend + required providers
-├── terraform.tfvars         # Variable values (git-ignored)
-├── terraform.tfvars.example # Example variable values
-├── Screenshots/             # Console + terminal evidence
-└── README.md
+2-vpc-peering/
+├── main.tf         # VPCs, subnets, IGWs, route tables, peering, security groups, EC2
+├── data.tf         # AMI and Availability Zone lookups
+├── variables.tf    # Regions, CIDRs, key names
+├── outputs.tf      # Instance private/public IPs
+├── providers.tf    # Multi-region provider aliases
+├── backend.tf      # Remote S3 state
+└── Screenshots/    # Validation evidence
 ```
-
-## Prerequisites
-
-- An AWS account with permissions for VPC, EC2 and S3.
-- **Terraform** ≥ 1.5 and the **AWS CLI**, both configured with credentials.
-- An existing **S3 bucket** for remote state (referenced in `backend.tf`).
-- **EC2 key pairs** created in *both* regions (`ap-south-1` and `ap-south-2`)
-  for SSH access, with the corresponding `.pem` files available locally.
-- Region **`ap-south-2` (Hyderabad) enabled** on the account (opt-in region).
-
-## Configuration Reference
-
-### Input Variables (`variables.tf`)
-
-| Variable | Description | Default |
-|---|---|---|
-| `environment` | Environment tag applied to resources | `development` |
-| `primary` | Primary region | `ap-south-1` |
-| `secondary` | Secondary region | `ap-south-2` |
-| `primary_vpc_cidr` | CIDR block for the primary VPC | `10.0.0.0/16` |
-| `secondary_vpc_cidr` | CIDR block for the secondary VPC | `10.1.0.0/16` |
-| `instance_type` | EC2 instance type | `t3.micro` |
-| `primary_key_name` | Key pair name in the primary region | `vpc-peering-demo` |
-| `secondary_key_name` | Key pair name in the secondary region | `vpc-peering-demo` |
-
-> **Note on key pairs:** the key-pair *names* are the same in both regions, but
-> key pairs are region-specific, so each region has its own key material. Use
-> the `.pem` file that matches the region you are connecting to.
-
-### Outputs (`outputs.tf`)
-
-| Output | Description |
-|---|---|
-| `primary_instance_private_ip` | Private IP of the primary instance (`10.0.1.10`) |
-| `primary_instance_public_ip` | Public IP of the primary instance (for SSH) |
-| `secondary_instance_private_ip` | Private IP of the secondary instance (`10.1.1.10`) |
-| `secondary_instance_public_ip` | Public IP of the secondary instance (for SSH) |
-
-## Deployment Guide
-
-1. **Clone and initialize**
-   ```bash
-   terraform init
-   ```
-2. **Set variables** — copy the example and adjust as needed:
-   ```bash
-   cp terraform.tfvars.example terraform.tfvars
-   ```
-3. **Review the plan**
-   ```bash
-   terraform plan
-   ```
-4. **Apply**
-   ```bash
-   terraform apply
-   ```
-5. **Read the outputs**
-   ```bash
-   terraform output
-   ```
-
-> The Apache install runs on first boot via cloud-init and takes ~1–2 minutes.
-> If `curl` refuses or hangs immediately after launch, wait until
-> `cloud-init status` reports `done` on the target instance.
-
-## Verification
-
-SSH into the primary instance (public IP + matching key), then reach the
-secondary over its **private** IP across the peering link:
-
-```bash
-# from the primary instance (10.0.1.10):
-ping 10.1.1.10          # ICMP over peering  → 0% packet loss
-curl http://10.1.1.10   # HTTP over peering  → "Secondary VPC Instance - ap-south-2"
-```
-
-**Primary → Secondary** (`10.0.1.10` → `10.1.1.10`)
-
-![Primary to secondary ping and curl](Screenshots/01-primary-to-secondary-ping-curl.png)
-
-And the reverse, from the secondary instance:
-
-```bash
-# from the secondary instance (10.1.1.10):
-ping 10.0.1.10
-curl http://10.0.1.10   # "Primary VPC Instance - ap-south-1"
-```
-
-**Secondary → Primary** (`10.1.1.10` → `10.0.1.10`)
-
-![Secondary to primary ping and curl](Screenshots/02-secondary-to-primary-ping-curl.png)
-
-**Success criteria:** clean pings (0% loss) **and** each instance returns the
-peer's Apache page over the private IP — proving the two regions are joined
-into one routable network.
-
-## Troubleshooting & Lessons Learned
-
-| Symptom | Root cause | Fix |
-|---|---|---|
-| `curl` refused but `ping` works | No web server listening — `user_data` was never attached to the instance | Reference `user_data` on the instance and recreate it |
-| Apache missing on a running box | `user_data` only runs at **first boot**; instance was launched before it was wired in | Recreate the instance (`terraform apply -replace=...`) |
-| IPs change on every apply | No fixed `private_ip`; addresses reassigned each rebuild | Set a fixed `private_ip` per instance |
-| `RouteAlreadyExists` on apply | Inline `route {}` blocks mixed with standalone `aws_route` on the same table | Use one style only — all standalone `aws_route` |
-| Intermittent ping | Testing against a stale IP from a previous rebuild | Read the current IP from `terraform output` |
-| SSH `Permission denied` | On Windows, an over-permissive `.pem` is ignored by OpenSSH; or wrong region's key | Restrict the key with `icacls`; use the `.pem` matching that region |
-
-**Key takeaways**
-- Non-overlapping CIDRs are mandatory for peering.
-- Cross-region peering needs the requester + accepter two-resource pattern.
-- `ping` working while `curl` fails means the network path is fine — look at
-  the service or the TCP rule, not the peering.
-- Key pairs are region-specific even when they share a name.
-
-> **Want 3 VPCs?** See the sibling projects:
-> [3-VPC full mesh (no Transit Gateway)](../3-vpc-full-mesh/) and
-> [3-VPC with Transit Gateway](../3-vpc-transit-gateway/).
-
-## Cost Considerations
-
-- **EC2:** two `t3.micro` instances (free-tier eligible in each region within
-  limits; otherwise on-demand hourly).
-- **VPC peering:** no hourly charge for the connection itself, but
-  **cross-region data transfer is billed** in both directions.
-- **S3:** negligible cost for the small remote state object.
-- VPCs, subnets, route tables, IGWs and security groups incur no direct charge.
-
-> Run `terraform destroy` when finished to avoid ongoing charges.
-
-## Cleanup
-
-```bash
-terraform destroy
-```
-
-This removes both instances, the peering connection, security groups, route
-tables, IGWs, subnets and VPCs across both regions. The remote state object and
-the state bucket are **not** managed by this configuration and remain.

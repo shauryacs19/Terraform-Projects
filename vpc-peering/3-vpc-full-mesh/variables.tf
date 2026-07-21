@@ -46,14 +46,39 @@ variable "instance_type" {
   default     = "t3.micro"
 }
 
+# Least privilege: one key pair per region (distinct key material each).
 variable "primary_key_name" {
-  description = "The name of the key pair for the primary VPC."
+  description = "Key pair name for the primary region."
   type        = string
-  default     = "vpc-peering-demo"
+  default     = "vpc-peering-primary"
 }
 
 variable "secondary_key_name" {
-  description = "The name of the key pair for the secondary VPC."
+  description = "Key pair name for the secondary region."
   type        = string
-  default     = "vpc-peering-demo-two"
+  default     = "vpc-peering-secondary"
+}
+
+variable "tertiary_key_name" {
+  description = "Key pair name for the tertiary region."
+  type        = string
+  default     = "vpc-peering-tertiary"
+}
+
+variable "primary_public_key_path" {
+  description = "Path to the SSH public key for the primary region."
+  type        = string
+  default     = "keys/primary.pub"
+}
+
+variable "secondary_public_key_path" {
+  description = "Path to the SSH public key for the secondary region."
+  type        = string
+  default     = "keys/secondary.pub"
+}
+
+variable "tertiary_public_key_path" {
+  description = "Path to the SSH public key for the tertiary region."
+  type        = string
+  default     = "keys/tertiary.pub"
 }

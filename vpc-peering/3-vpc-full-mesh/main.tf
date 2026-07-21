@@ -195,13 +195,65 @@ resource "aws_vpc_peering_connection_accepter" "secondary_to_primary" {
   }
 }
 
+resource "aws_vpc_peering_connection" "primary_to_tertiary" {
+  provider = aws.primary
+  vpc_id = aws_vpc.primary_vpc.id
+  peer_vpc_id = aws_vpc.tertiary_vpc.id
+  peer_region = var.tertiary
+  auto_accept = false
+
+  tags = {
+    Name = "VPC-Peering-${var.primary}-${var.tertiary}"
+    Environment = var.environment
+    Side = "Accepter"
+  }
+}
+
+resource "aws_vpc_peering_connection_accepter" "tertiary_to_primary" {
+  provider = aws.tertiary
+  vpc_peering_connection_id = aws_vpc_peering_connection.primary_to_tertiary.id
+  auto_accept = true
+
+  tags = {
+    Name = "VPC-Peering-${var.tertiary}-${var.primary}"
+    Environment = var.environment
+    Side = "Requester"
+  }
+}
+
+resource "aws_vpc_peering_connection" "secondary_to_tertiary" {
+  provider = aws.secondary
+  vpc_id = aws_vpc.secondary_vpc.id
+  peer_vpc_id = aws_vpc.tertiary_vpc.id
+  peer_region = var.tertiary
+  auto_accept = false
+
+  tags = {
+    Name = "VPC-Peering-${var.secondary}-${var.tertiary}"
+    Environment = var.environment
+    Side = "Accepter"
+  }
+}
+
+resource "aws_vpc_peering_connection_accepter" "tertiary_to_secondary" {
+  provider = aws.tertiary
+  vpc_peering_connection_id = aws_vpc_peering_connection.secondary_to_tertiary.id
+  auto_accept = true
+
+  tags = {
+    Name = "VPC-Peering-${var.tertiary}-${var.secondary}"
+    Environment = var.environment
+    Side = "Requester"
+  }
+}
+
 resource "aws_route" "primary_to_secondary_route" {
   provider = aws.primary
   route_table_id = aws_route_table.primary_rt.id
   destination_cidr_block = var.secondary_vpc_cidr
   vpc_peering_connection_id = aws_vpc_peering_connection.primary_to_secondary.id
 
-  depends_on = [aws_vpc_peering_connection_accepter.secondary_accepter]
+  depends_on = [aws_vpc_peering_connection_accepter.secondary_to_primary]
 }
 
 resource "aws_route" "secondary_to_primary_route" {
@@ -210,7 +262,43 @@ resource "aws_route" "secondary_to_primary_route" {
   destination_cidr_block = var.primary_vpc_cidr
   vpc_peering_connection_id = aws_vpc_peering_connection.primary_to_secondary.id
 
-  depends_on = [aws_vpc_peering_connection_accepter.secondary_accepter]
+  depends_on = [aws_vpc_peering_connection_accepter.secondary_to_primary]
+}
+
+resource "aws_route" "primary_to_tertiary_route" {
+  provider = aws.primary
+  route_table_id = aws_route_table.primary_rt.id
+  destination_cidr_block = var.tertiary_vpc_cidr
+  vpc_peering_connection_id = aws_vpc_peering_connection.primary_to_tertiary.id
+
+  depends_on = [aws_vpc_peering_connection_accepter.tertiary_to_primary]
+}
+
+resource "aws_route" "tertiary_to_primary_route" {
+  provider = aws.tertiary
+  route_table_id = aws_route_table.tertiary_rt.id
+  destination_cidr_block = var.primary_vpc_cidr
+  vpc_peering_connection_id = aws_vpc_peering_connection.primary_to_tertiary.id
+
+  depends_on = [aws_vpc_peering_connection_accepter.tertiary_to_primary]
+}
+
+resource "aws_route" "secondary_to_tertiary_route" {
+  provider = aws.secondary
+  route_table_id = aws_route_table.secondary_rt.id
+  destination_cidr_block = var.tertiary_vpc_cidr
+  vpc_peering_connection_id = aws_vpc_peering_connection.secondary_to_tertiary.id
+
+  depends_on = [aws_vpc_peering_connection_accepter.tertiary_to_secondary]
+}
+
+resource "aws_route" "tertiary_to_secondary_route" {
+  provider = aws.tertiary
+  route_table_id = aws_route_table.tertiary_rt.id
+  destination_cidr_block = var.secondary_vpc_cidr
+  vpc_peering_connection_id = aws_vpc_peering_connection.secondary_to_tertiary.id
+
+  depends_on = [aws_vpc_peering_connection_accepter.tertiary_to_secondary]
 }
 
 resource "aws_security_group" "primary_sg" {
@@ -228,19 +316,19 @@ resource "aws_security_group" "primary_sg" {
   }
 
   ingress {
-    description = "Allow ICMP from anywhere"
+    description = "Allow ICMP from peer VPCs"
     from_port = -1
     to_port = -1
     protocol = "icmp"
-    cidr_blocks = [var.secondary_vpc_cidr]
+    cidr_blocks = [var.secondary_vpc_cidr, var.tertiary_vpc_cidr]
   }
 
   ingress {
-    description = "All traffic from secondary VPC"
+    description = "All TCP from peer VPCs"
     from_port = 0
     to_port = 65535
     protocol = "tcp"
-    cidr_blocks = [var.secondary_vpc_cidr]
+    cidr_blocks = [var.secondary_vpc_cidr, var.tertiary_vpc_cidr]
   }
 
   egress {
@@ -272,19 +360,19 @@ resource "aws_security_group" "secondary_sg" {
   }
 
   ingress {
-    description = "Allow ICMP from anywhere"
+    description = "Allow ICMP from peer VPCs"
     from_port = -1
     to_port = -1
     protocol = "icmp"
-    cidr_blocks = [var.primary_vpc_cidr]
+    cidr_blocks = [var.primary_vpc_cidr, var.tertiary_vpc_cidr]
   }
 
   ingress {
-    description = "All traffic from primary VPC"
+    description = "All TCP from peer VPCs"
     from_port = 0
     to_port = 65535
     protocol = "tcp"
-    cidr_blocks = [var.primary_vpc_cidr]
+    cidr_blocks = [var.primary_vpc_cidr, var.tertiary_vpc_cidr]
   }
 
   egress {
@@ -301,13 +389,77 @@ resource "aws_security_group" "secondary_sg" {
   }
 }
 
+resource "aws_security_group" "tertiary_sg" {
+  provider = aws.tertiary
+  name = "Tertiary-SG-${var.tertiary}"
+  description = "Security group for tertiary VPC"
+  vpc_id = aws_vpc.tertiary_vpc.id
+
+  ingress {
+    description = "Allow SSH from anywhere"
+    from_port = 22
+    to_port = 22
+    protocol = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description = "Allow ICMP from peer VPCs"
+    from_port = -1
+    to_port = -1
+    protocol = "icmp"
+    cidr_blocks = [var.primary_vpc_cidr, var.secondary_vpc_cidr]
+  }
+
+  ingress {
+    description = "All TCP from peer VPCs"
+    from_port = 0
+    to_port = 65535
+    protocol = "tcp"
+    cidr_blocks = [var.primary_vpc_cidr, var.secondary_vpc_cidr]
+  }
+
+  egress {
+    description = "Allow all outbound traffic"
+    from_port = 0
+    to_port = 0
+    protocol = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "Tertiary-SG-${var.tertiary}"
+    Environment = var.environment
+  }
+}
+
+# Least privilege: each region gets its OWN key pair (distinct key material),
+# so a compromised private key only exposes that one region's instance.
+resource "aws_key_pair" "primary_key" {
+  provider   = aws.primary
+  key_name   = var.primary_key_name
+  public_key = file(var.primary_public_key_path)
+}
+
+resource "aws_key_pair" "secondary_key" {
+  provider   = aws.secondary
+  key_name   = var.secondary_key_name
+  public_key = file(var.secondary_public_key_path)
+}
+
+resource "aws_key_pair" "tertiary_key" {
+  provider   = aws.tertiary
+  key_name   = var.tertiary_key_name
+  public_key = file(var.tertiary_public_key_path)
+}
+
 resource "aws_instance" "primary_instance" {
   provider = aws.primary
   ami = data.aws_ami.primary_ami.id
   instance_type = var.instance_type
   subnet_id = aws_subnet.primary_subnet.id
   vpc_security_group_ids = [aws_security_group.primary_sg.id]
-  key_name = var.primary_key_name
+  key_name = aws_key_pair.primary_key.key_name
   user_data = local.primary_user_data
   private_ip = cidrhost(cidrsubnet(var.primary_vpc_cidr, 8, 1), 10)
 
@@ -323,12 +475,28 @@ resource "aws_instance" "secondary_instance" {
   instance_type = var.instance_type
   subnet_id = aws_subnet.secondary_subnet.id
   vpc_security_group_ids = [aws_security_group.secondary_sg.id]
-  key_name = var.secondary_key_name
+  key_name = aws_key_pair.secondary_key.key_name
   user_data = local.secondary_user_data
   private_ip = cidrhost(cidrsubnet(var.secondary_vpc_cidr, 8, 1), 10)
 
   tags = {
     Name = "Secondary-Instance-${var.secondary}"
+    Environment = var.environment
+  }
+}
+
+resource "aws_instance" "tertiary_instance" {
+  provider = aws.tertiary
+  ami = data.aws_ami.tertiary_ami.id
+  instance_type = var.instance_type
+  subnet_id = aws_subnet.tertiary_subnet.id
+  vpc_security_group_ids = [aws_security_group.tertiary_sg.id]
+  key_name = aws_key_pair.tertiary_key.key_name
+  user_data = local.tertiary_user_data
+  private_ip = cidrhost(cidrsubnet(var.tertiary_vpc_cidr, 8, 1), 10)
+
+  tags = {
+    Name = "Tertiary-Instance-${var.tertiary}"
     Environment = var.environment
   }
 }

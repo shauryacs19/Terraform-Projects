@@ -1,0 +1,17 @@
+# Repo-wide safety net — never commit secrets or Terraform state anywhere.
+# Per-project .gitignore files may add more; this is the blanket fallback.
+
+# SSH private keys
+*.pem
+
+# Terraform state and locals
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+crash.log
+*.log
+
+# Variable files that may contain values/secrets (keep the *.example)
+terraform.tfvars
+*.tfvars.json

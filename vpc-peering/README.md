@@ -9,7 +9,7 @@ Each part is a self-contained Terraform project with its own README.
 | # | Project | Topology | Transitive? | Status |
 |---|---|---|---|---|
 | 1 | **[2-vpc-peering](2-vpc-peering/)** | Direct cross-region peering between 2 VPCs | n/a (only 2) | ✅ Deployed & verified |
-| 2 | **[3-vpc-full-mesh](3-vpc-full-mesh/)** | 3 VPCs, full mesh — peer every pair (no Transit Gateway) | ✅ (via full mesh) | 🚧 Work in progress |
+| 2 | **[3-vpc-full-mesh](3-vpc-full-mesh/)** | 3 VPCs, full mesh — peer every pair (no Transit Gateway) | ✅ (via full mesh) | ✅ Deployed & verified |
 | 3 | **[3-vpc-transit-gateway](3-vpc-transit-gateway/)** | 3 VPCs attached to a central Transit Gateway hub | ✅ (native) | 📐 Design / planned |
 
 ## How they differ

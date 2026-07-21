@@ -1,1 +1,17 @@
-bucket_name = "your-static-website-bucket"
+# All variables have sensible defaults (see variables.tf). Override here if needed.
+# Least privilege: each region has its OWN key pair (distinct key material).
+
+# key names (one per region)
+# primary_key_name   = "vpc-peering-primary"
+# secondary_key_name = "vpc-peering-secondary"
+# tertiary_key_name  = "vpc-peering-tertiary"
+
+# public key paths (generate 3 key pairs with ssh-keygen — see README)
+# primary_public_key_path   = "keys/primary.pub"
+# secondary_public_key_path = "keys/secondary.pub"
+# tertiary_public_key_path  = "keys/tertiary.pub"
+
+# Regions / CIDRs (defaults shown)
+# primary            = "ap-south-1"
+# secondary          = "ap-south-2"
+# tertiary           = "ap-southeast-1"
