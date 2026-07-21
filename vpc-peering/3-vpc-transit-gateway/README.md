@@ -16,7 +16,7 @@ attachments — giving all-to-all reachability without peering every pair.
 
 ## Architecture
 
-_Diagram pending — export to `architecture-3vpc-transit-gateway.png`._
+<img src="architecture-3vpc-transit-gateway.png" width="640">
 
 ## AWS Services Used
 
