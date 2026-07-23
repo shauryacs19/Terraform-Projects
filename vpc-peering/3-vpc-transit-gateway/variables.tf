@@ -16,12 +16,6 @@ variable "secondary" {
   default     = "ap-south-2"
 }
 
-variable "tertiary" {
-  description = "The AWS region where the resources will be created."
-  type        = string
-  default     = "ap-southeast-1"
-}
-
 variable "primary_vpc_cidr" {
   description = "The CIDR block for the primary VPC."
   type        = string
@@ -32,12 +26,6 @@ variable "secondary_vpc_cidr" {
   description = "The CIDR block for the secondary VPC."
   type        = string
   default     = "10.1.0.0/16"
-}
-
-variable "tertiary_vpc_cidr" {
-  description = "The CIDR block for the tertiary VPC."
-  type        = string
-  default     = "10.2.0.0/16"
 }
 
 variable "instance_type" {
@@ -59,12 +47,6 @@ variable "secondary_key_name" {
   default     = "vpc-peering-secondary"
 }
 
-variable "tertiary_key_name" {
-  description = "Key pair name for the tertiary region."
-  type        = string
-  default     = "vpc-peering-tertiary"
-}
-
 variable "primary_public_key_path" {
   description = "Path to the SSH public key for the primary region."
   type        = string
@@ -75,10 +57,4 @@ variable "secondary_public_key_path" {
   description = "Path to the SSH public key for the secondary region."
   type        = string
   default     = "keys/secondary.pub"
-}
-
-variable "tertiary_public_key_path" {
-  description = "Path to the SSH public key for the tertiary region."
-  type        = string
-  default     = "keys/tertiary.pub"
 }
